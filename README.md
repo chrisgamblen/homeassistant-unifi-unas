@@ -1,6 +1,6 @@
 # UniFi UNAS for Home Assistant
 
-> **Custom fork — patch under review, not yet released or deployed.** Based on
+> **Custom fork — `v0.11.0-beta.3-custom.1`.** Based on
 > Cardouken's `v0.11.0-beta.3`, with the previously tested five-second network
 > monitoring thread and MQTT publishing lock carried forward. The only network
 > adaptations are beta.3's `network_rx`/`network_tx` keys and its existing physical
