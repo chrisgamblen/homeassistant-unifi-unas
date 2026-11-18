@@ -14,6 +14,7 @@ class FakeMQTT:
 
     def publish(self, topic, payload, retain=False):
         self.published[topic] = payload
+        return SimpleNamespace(rc=0)
 
 
 @pytest.fixture
