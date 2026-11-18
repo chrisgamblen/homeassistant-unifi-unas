@@ -1,5 +1,16 @@
 # UniFi UNAS for Home Assistant
 
+> **Custom fork — patch under review, not yet released or deployed.** Based on
+> Cardouken's `v0.11.0-beta.3`, with the previously tested five-second network
+> monitoring thread and MQTT publishing lock carried forward. The only network
+> adaptations are beta.3's `network_rx`/`network_tx` keys and its existing physical
+> interface counter function and decimal MB/s units. General system monitoring
+> keeps its configured interval (30 seconds by default); one-shot diagnostics
+> still sample synchronously. Unchanged MQTT values retain upstream's suppression
+> and 60-second refresh behavior. Sensor definitions, disk monitoring and fan
+> control remain upstream beta.3. Original project and credit:
+> [cardouken/homeassistant-unifi-unas](https://github.com/cardouken/homeassistant-unifi-unas).
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/release/cardouken/homeassistant-unifi-unas.svg)](https://github.com/cardouken/homeassistant-unifi-unas/releases)
 [![License](https://img.shields.io/github/license/cardouken/homeassistant-unifi-unas.svg)](https://github.com/cardouken/homeassistant-unifi-unas/blob/main/LICENSE.md)

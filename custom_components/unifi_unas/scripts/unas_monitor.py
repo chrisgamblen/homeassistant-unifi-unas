@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 CONFIG = load_config()
 MQTT_ROOT = CONFIG.get("root", "unas")
 DEFAULT_MONITOR_INTERVAL = 30
+NETWORK_MONITOR_INTERVAL = 5
 MQTT_AVAILABILITY = f"{MQTT_ROOT}/availability"
 MQTT_SYSTEM = f"{MQTT_ROOT}/system"
 MQTT_HDD = f"{MQTT_ROOT}/hdd"
@@ -128,6 +130,7 @@ class UNASMonitor:
         # anything _on_connect touches must exist before the connect wait below,
         # paho fires the callback from its own thread
         self._last_published = {}  # topic -> (payload, monotonic ts)
+        self._publish_lock = threading.Lock()
         self._storage = _UNSET  # /api/v2/storage, fetched once per cycle
         self._user_map_cache = None  # (ts, user_map, console_owner)
         self._share_members_cache = {}  # drive_id -> (ts, member_count, members)
@@ -178,7 +181,8 @@ class UNASMonitor:
             self._connected = True
             self.mqtt.subscribe(MONITOR_INTERVAL_TOPIC)
             self.mqtt.publish(MQTT_AVAILABILITY, "online", retain=True)
-            self._last_published.clear()
+            with self._publish_lock:
+                self._last_published.clear()
         else:
             logger.error(f"MQTT failed: {reason_code}")
             self._connected = False
@@ -201,11 +205,34 @@ class UNASMonitor:
     def _publish(self, topic, value):
         payload = str(value)
         now = time.monotonic()
-        last = self._last_published.get(topic)
-        if last and last[0] == payload and now - last[1] < REPUBLISH_INTERVAL:
-            return
-        self.mqtt.publish(topic, payload, retain=True)
-        self._last_published[topic] = (payload, now)
+
+        with self._publish_lock:
+            last = self._last_published.get(topic)
+
+            if (
+                last
+                and last[0] == payload
+                and now - last[1] < REPUBLISH_INTERVAL
+            ):
+                return
+
+            result = self.mqtt.publish(
+                topic,
+                payload,
+                retain=True
+            )
+
+            if result.rc == 0:
+                self._last_published[topic] = (
+                    payload,
+                    now
+                )
+            else:
+                logger.warning(
+                    "MQTT publish failed for %s: %s",
+                    topic,
+                    result.rc
+                )
 
     def publish_system(self, metric, value):
         self._publish(f"{MQTT_SYSTEM}/{metric}", value)
@@ -502,9 +529,12 @@ class UNASMonitor:
             ).strip()
         data['cpu_usage'] = self.get_cpu_usage()
         data['disk_read'], data['disk_write'] = self.get_disk_throughput()
-        rx, tx = self.get_network_throughput()
-        if rx is not None:
-            data['network_rx'], data['network_tx'] = rx, tx
+        # Live network sampling belongs exclusively to its own thread. Keep
+        # synchronous sampling for --once/--json and other headless collectors.
+        if not self.mqtt_enabled:
+            rx, tx = self.get_network_throughput()
+            if rx is not None:
+                data['network_rx'], data['network_tx'] = rx, tx
 
         with open('/proc/meminfo') as f:
             meminfo = {
@@ -600,6 +630,35 @@ class UNASMonitor:
             round((rx - prev[1]) / elapsed / 1_000_000, 2),
             round((tx - prev[2]) / elapsed / 1_000_000, 2),
         )
+
+    def network_monitor_loop(self):
+        """Publish NAS network throughput every 5 seconds."""
+
+        logger.info(
+            "Network monitor started (interval: %ss)",
+            NETWORK_MONITOR_INTERVAL
+        )
+
+        # beta.3 establishes the counter baseline during initialization.
+        while True:
+            try:
+                download, upload = self.get_network_throughput()
+
+                if download is not None and upload is not None:
+                    if self.mqtt_enabled and self.mqtt is not None:
+                        self.publish_system(
+                            "network_rx", download
+                        )
+                        self.publish_system(
+                            "network_tx", upload
+                        )
+
+            except Exception:
+                logger.exception(
+                    "Network monitoring error"
+                )
+
+            time.sleep(NETWORK_MONITOR_INTERVAL)
 
     def get_disk_throughput(self):
         def read_diskstats():
@@ -1079,13 +1138,29 @@ class UNASMonitor:
         return data
 
     def run(self):
-        logger.info(f"UNAS monitor started (interval: {self.monitor_interval}s)")
+        logger.info(
+            "UNAS monitor started (interval: %ss)",
+            self.monitor_interval
+        )
 
+        # Network throughput runs independently of the
+        # main monitoring cycle.
+        network_thread = threading.Thread(
+            target=self.network_monitor_loop,
+            name="unas-network-monitor",
+            daemon=True
+        )
+
+        network_thread.start()
+
+        # Existing system, disk, storage and health monitoring.
         while True:
             try:
                 self.collect_and_publish()
-            except Exception as e:
-                logger.error(f"Error: {e}")
+            except Exception:
+                logger.exception(
+                    "Main monitoring cycle failed"
+                )
 
             time.sleep(self.monitor_interval)
 
